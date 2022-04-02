@@ -4,11 +4,14 @@ Data loading utilities
 author: William Tong (wtong@g.harvard.edu)
 """
 
+from collections import defaultdict
+
 from pathlib import Path
 import pickle
 
 import numpy as np
 from music21 import corpus
+from music21 import note as nt
 from tqdm import tqdm
 
 import torch
@@ -16,19 +19,23 @@ from torch.utils.data import TensorDataset
 
 REST_IDX = 128
 
-def load_composer(data_dir='data/bach', name='bach'):
+def load_composer(data_dir='data/music21', name='bach'):
     if type(data_dir) == str:
         data_dir = Path(data_dir)
     
     scores = None
+    pkl_path = data_dir / f'{name}.pkl'
+    
     if not data_dir.exists():
         data_dir.mkdir()
-        bundle = corpus.search(name, 'composer')
-        scores = [metadata.parse() for metadata in tqdm(bundle)]
-        with (data_dir / f'{name}.pkl').open('wb') as fp:
-            pickle.dump(scores, fp)
+
+        if not pkl_path.exists():
+            bundle = corpus.search(name, 'composer')
+            scores = [metadata.parse() for metadata in tqdm(bundle)]
+            with pkl_path.open('wb') as fp:
+                pickle.dump(scores, fp)
     else:
-        with (data_dir / f'{name}.pkl').open('rb') as fp:
+        with pkl_path.open('rb') as fp:
             scores = pickle.load(fp)
     
     return scores

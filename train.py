@@ -12,13 +12,15 @@ from music21 import note as nt
 from music21 import stream
 
 import torch
+from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader, random_split
 
+from scipy.special import logsumexp
 from tqdm import tqdm
 
 from data import load_composer, scores_to_dataset
-from model import MusicVAE
+from model import MusicVAE, MusicAE
 
 # <codecell>
 scores = load_composer(name='bach')
@@ -37,11 +39,10 @@ def evaluate_model(model, test_dl):
     total_loss = 0
     num_iters = 0
 
-    curr_loss = []
     kl_loss = []
     means = []
     sigs = []
-    for x in tqdm(test_loader):
+    for x in tqdm(test_dl):
         x = x[0].cuda()
         x_reco = model(x)
         loss = model.loss(x, x_reco)
@@ -52,7 +53,7 @@ def evaluate_model(model, test_dl):
         sigs.append(np.mean(loss['sig'].cpu().numpy()))
         num_iters += 1
 
-    print('Eval loss:', np.mean(curr_loss))
+    print('Eval loss:', total_loss / num_iters)
     print('KL: ', np.mean(kl_loss))
     print('Mu:', np.mean(means))
     print('Sig:', np.mean(sigs))
@@ -94,24 +95,9 @@ for epoch in range(num_epochs):
     model.train()
     test_losses.append(test_loss)
 
-with torch.no_grad():
-    model.eval()
-    curr_loss = []
-    kl_loss = []
-    for x in tqdm(test_loader):
-        x = x[0].cuda()
-        x_reco = model(x)
-        loss = model.loss(x, x_reco)
-        curr_loss.append(loss['total'].item())
-        kl_loss.append(loss['kl'].item())
-
-    test_losses.append(np.mean(curr_loss))
-    print('Eval loss:', np.mean(curr_loss))
-    print('KL: ', np.mean(kl_loss))
-
 # <codecell>
-plt.plot(np.arange(num_epochs), train_losses[::2*134][:-1], '--o', label='Train loss')
-plt.plot(np.arange(num_epochs), test_losses[:-1], '--o', label='Test loss')
+plt.plot(np.arange(num_epochs), train_losses, '--o', label='Train loss')
+plt.plot(np.arange(num_epochs), test_losses, '--o', label='Test loss')
 plt.xticks(np.arange(num_epochs)[::2])
 plt.legend()
 
@@ -122,6 +108,7 @@ plt.savefig('save/fig/loss.png')
 
 # <codecell>
 ## TODO: save model
+torch.save(model.state_dict(), 'save/model_ae.pt')
 
 # <codecell>
 with torch.no_grad():
@@ -134,8 +121,8 @@ def logits_to_score(logits, beta=5):
     for note_set in logits:
         score = stream.Stream()
         for note in note_set:
-            probs = np.exp(beta * note) / np.sum(np.exp(beta * note))
-            midi_val = np.random.choice(129, p=probs.flatten())
+            log_probs = beta * note - logsumexp(beta * note)
+            midi_val = np.random.choice(129, p=np.exp(log_probs).flatten())
             note = nt.Note(midi_val)
             score.append(note)
         
