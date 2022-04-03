@@ -29,11 +29,11 @@ def load_composer(data_dir='data/music21', name='bach'):
     if not data_dir.exists():
         data_dir.mkdir()
 
-        if not pkl_path.exists():
-            bundle = corpus.search(name, 'composer')
-            scores = [metadata.parse() for metadata in tqdm(bundle)]
-            with pkl_path.open('wb') as fp:
-                pickle.dump(scores, fp)
+    if not pkl_path.exists():
+        bundle = corpus.search(name, 'composer')
+        scores = [metadata.parse() for metadata in tqdm(bundle)]
+        with pkl_path.open('wb') as fp:
+            pickle.dump(scores, fp)
     else:
         with pkl_path.open('rb') as fp:
             scores = pickle.load(fp)
@@ -41,8 +41,8 @@ def load_composer(data_dir='data/music21', name='bach'):
     return scores
 
 
-def scores_to_dataset(scores):
-    examples = [_batch(part) for score in scores for part in score.parts]
+def scores_to_dataset(scores, sampling_rate=0.25):
+    examples = [_batch(part, sampling_rate=sampling_rate) for score in scores for part in score.parts]
     examples = np.concatenate(examples, axis=0)
     dataset = TensorDataset(torch.tensor(examples))
     return dataset

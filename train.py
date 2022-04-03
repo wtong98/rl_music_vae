@@ -20,11 +20,11 @@ from scipy.special import logsumexp
 from tqdm import tqdm
 
 from data import load_composer, scores_to_dataset
-from model import MusicVAE, MusicAE
+from model import MusicVAE, MusicAE, RnnAE
 
 # <codecell>
 scores = load_composer(name='bach')
-dataset = scores_to_dataset(scores)
+dataset = scores_to_dataset(scores, sampling_rate=0.5)
 
 test_len = int(len(dataset) * 0.1)
 train_len = len(dataset) - test_len
@@ -35,18 +35,37 @@ train_loader = DataLoader(train_ds, batch_size=32, shuffle=True, pin_memory=True
 test_loader = DataLoader(test_ds, batch_size=32, pin_memory=True)
 
 @torch.no_grad()
+def logits_to_idx(logits, beta=1):
+    vals_set = []
+    for note_set in logits:
+        vals = []
+        for note in note_set:
+            log_probs = beta * note - torch.logsumexp(beta * note, dim=0)
+            log_probs = log_probs.cpu().numpy()
+            midi_val = np.random.choice(129, p=np.exp(log_probs).flatten())
+            vals.append(midi_val)
+        vals_set.append(vals)
+    
+    vals_set = torch.tensor(vals_set)
+    return vals_set
+
+@torch.no_grad()
 def evaluate_model(model, test_dl):
     total_loss = 0
     num_iters = 0
+    total_acc = 0
 
     kl_loss = []
     means = []
     sigs = []
-    for x in tqdm(test_dl):
-        x = x[0].cuda()
+    for notes in tqdm(test_dl):
+        x = notes[0].cuda()
         x_reco = model(x)
         loss = model.loss(x, x_reco)
         total_loss += loss['total'].item()
+
+        preds = logits_to_idx(x_reco)
+        total_acc += torch.mean((torch.argmax(notes[0], dim=-1) == preds).float())
 
         kl_loss.append(loss['kl'].item())
         means.append(np.mean(loss['mu'].cpu().numpy()))
@@ -57,23 +76,25 @@ def evaluate_model(model, test_dl):
     print('KL: ', np.mean(kl_loss))
     print('Mu:', np.mean(means))
     print('Sig:', np.mean(sigs))
+    print('Acc:', total_acc / num_iters)
     return total_loss / num_iters
 
-model = MusicVAE()
+model = RnnAE()
 opt = Adam(model.parameters())
 
 model.cuda()
 
 train_losses = []
 test_losses = []
-num_epochs = 20
-
-# iters = 0
-# eval_every = 1000
+num_epochs = 3
 
 for epoch in range(num_epochs):
     total_loss = 0
     num_iters = 0
+
+    model.eval()
+    test_loss = evaluate_model(model, test_loader)
+    model.train()
 
     for x in tqdm(train_loader):
         x = x[0].cuda()
@@ -108,29 +129,32 @@ plt.savefig('save/fig/loss.png')
 
 # <codecell>
 ## TODO: save model
-torch.save(model.state_dict(), 'save/model_ae.pt')
+torch.save(model.state_dict(), 'save/model_rnn_ae.pt')
 
 # <codecell>
-with torch.no_grad():
-    samp = torch.randn((10, 128)).cuda()
-    logits = model._decode(samp).cpu()
+state_dict = torch.load('save/model_rnn_ae.pt')
+model.load_state_dict(state_dict)
+model.eval()
 
 # <codecell>
-def logits_to_score(logits, beta=5):
-    all_scores = []
-    for note_set in logits:
-        score = stream.Stream()
-        for note in note_set:
-            log_probs = beta * note - logsumexp(beta * note)
-            midi_val = np.random.choice(129, p=np.exp(log_probs).flatten())
-            note = nt.Note(midi_val)
-            score.append(note)
-        
-        all_scores.append(score)
-    
-    return all_scores
+model.cpu()
+# <codecell>
+ex = next(iter(test_loader))[0]
+print(torch.argmax(ex[0], dim=-1))
+z = model._encode(ex)
 
-all_scores = logits_to_score(logits.numpy())
+# <codecell>
+N = 5
+all_scores = []
+
+for _ in range(N):
+    samp = model.sample(z[:1, :], start_seq=[60], beta=0.5)
+    score = stream.Stream()
+    for note in samp:
+        elem = nt.Note(note)
+        score.append(elem)
+    all_scores.append(score)
+
         
 # %%
 for i, score in enumerate(all_scores):

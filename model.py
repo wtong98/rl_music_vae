@@ -4,6 +4,8 @@ Model definitions
 author: William Tong (wtong@g.harvard.edu)
 """
 
+import numpy as np
+
 import torch
 from torch import nn
 from torch.distributions import Normal, kl_divergence
@@ -272,13 +274,209 @@ class MusicAE(nn.Module):
     
     def loss(self, x, x_reco, kl_weight=0.5):
         targets = torch.argmax(x, dim=-1)
-        targets = targets.reshape(-1)
-        logits = x_reco.reshape(-1, self.num_pitches)
+        targets = targets.flatten()
+        logits = x_reco.flatten(end_dim=-2)
         base_loss = nn.functional.cross_entropy(logits, targets, reduction='mean')
 
         return {
             'ce': base_loss,
             'kl': torch.tensor(0),
+            'mu': torch.tensor(0),
+            'sig': torch.tensor(0),
+            'total': base_loss
+        }
+
+
+class RnnAE(nn.Module):
+    def __init__(self, num_bars=2) -> None:
+        super().__init__()
+
+        self.num_bars = num_bars
+        self.num_samples = num_bars * 16
+        self.num_pitches = 129
+
+        self.emb_size = 64
+
+        self.enc_size = 512      # paper uses 2048
+        self.enc_layers = 2      # paper uses 2
+
+        self.latent_size = 128    # paper uses 512
+
+        self.dec_size = 512      # paper uses 1024
+        self.dec_layers = 2      # paper to uses 2
+
+
+        # self.embedding = nn.Embedding(self.num_pitches, self.emb_size)
+        self.embedding = nn.Linear(self.num_pitches, self.emb_size)
+
+        self.encoder = nn.LSTM(
+            input_size=self.emb_size,
+            batch_first=True,
+            hidden_size=self.enc_size,
+            num_layers=self.enc_layers,
+            bidirectional=True
+        )
+
+        enc_out_dim = 2 * self.enc_size * self.num_samples
+        self.enc_lin_1 = nn.Linear(enc_out_dim, self.latent_size)  # paper uses 2 layers here
+
+        self.latent_to_dec = nn.Linear(self.latent_size, 2 * self.dec_size * self.dec_layers)
+        self.dec = nn.LSTM(
+            input_size=self.emb_size,
+            batch_first=True,
+            hidden_size=self.dec_size,
+            num_layers=self.dec_layers,
+        )
+
+        self.dec_to_logit = nn.Linear(self.dec_size, self.num_pitches)
+    
+    def _encode(self, x):
+        x = self.embedding(x)
+        x, _ = self.encoder(x)
+        x = torch.flatten(x, start_dim=1)
+        x = self.enc_lin_1(x)
+
+    def _decode(self, x, h, c):
+        input_emb = self.embedding(x)
+        dec_out, (h, c) = self.decoder_lstm(input_emb, (h, c))
+        logits = self.dec_to_logit(dec_out)
+        return logits, h, c
+
+    def forward(self, x):
+        z = self._encode(x)
+        z = self.latent_to_dec(z)
+        h, c = z.chunk(2, dim=-1)
+
+        logits = self._decode(x, h, c)
+        return logits
+    
+    # TODO: fix loss
+    def loss(self, x, x_reco, kl_weight=0.5):
+        targets = torch.argmax(x, dim=-1)
+        targets = targets.flatten()
+        logits = x_reco.flatten(end_dim=-2)
+        base_loss = nn.functional.cross_entropy(logits, targets, reduction='mean')
+
+        return {
+            'ce': base_loss,
+            'kl': torch.tensor(-1),
+            'mu': torch.tensor(0),
+            'sig': torch.tensor(0),
+            'total': base_loss
+        }
+
+class RnnAE(nn.Module):
+    def __init__(self, num_bars=2) -> None:
+        super().__init__()
+
+        self.num_bars = num_bars
+        self.num_samples = num_bars * 16
+        self.num_pitches = 129
+
+        self.emb_size = 64
+
+        self.enc_size = 512      # paper uses 2048
+        self.enc_layers = 2      # paper uses 2
+
+        self.latent_size = 128    # paper uses 512
+
+        self.dec_size = 512      # paper uses 1024
+        self.dec_layers = 2      # paper to uses 2
+
+
+        # self.embedding = nn.Embedding(self.num_pitches, self.emb_size)
+        self.embedding = nn.Linear(self.num_pitches, self.emb_size)
+
+        self.encoder = nn.LSTM(
+            input_size=self.emb_size,
+            batch_first=True,
+            hidden_size=self.enc_size,
+            num_layers=self.enc_layers,
+            bidirectional=True
+        )
+
+        enc_out_dim = 2 * self.enc_size * self.num_samples
+        self.enc_lin_1 = nn.Linear(enc_out_dim, self.latent_size)  # paper uses 2 layers here
+
+        self.latent_to_dec = nn.Linear(self.latent_size, 2 * self.dec_size * self.dec_layers)
+        self.dec = nn.LSTM(
+            input_size=self.emb_size,
+            batch_first=True,
+            hidden_size=self.dec_size,
+            num_layers=self.dec_layers,
+        )
+
+        self.dec_to_logit = nn.Linear(self.dec_size, self.num_pitches)
+    
+    def _encode(self, x):
+        x = self.embedding(x)
+        x, _ = self.encoder(x)
+        x = torch.flatten(x, start_dim=1)
+        x = self.enc_lin_1(x)
+        return x
+
+    def _decode(self, x, h, c):
+        input_emb = self.embedding(x)
+        dec_out, (h, c) = self.dec(input_emb, (h, c))
+        logits = self.dec_to_logit(dec_out)
+        return logits, h, c
+
+    def forward(self, x):
+        z = self._encode(x)
+        z = self.latent_to_dec(z)
+        
+        # z = torch.zeros(z.shape).cuda()  # TODO: need more diverse dataset to prevent raw memorizing
+        h, c = z.chunk(2, dim=-1)
+        h = h.reshape(self.dec_layers, -1, self.dec_size)
+        c = c.reshape(self.dec_layers, -1, self.dec_size)
+
+        logits, _, _ = self._decode(x, h, c)
+        return logits
+    
+    @torch.no_grad()
+    def sample(self, z, max_length=32, beta=1, start_seq=None):
+        z = self.latent_to_dec(z)
+        h, c = z.chunk(2, dim=-1)
+        h = h.reshape(self.dec_layers, -1, self.dec_size)
+        c = c.reshape(self.dec_layers, -1, self.dec_size)
+
+        all_notes = [60] if start_seq == None else start_seq
+        curr_note = None
+
+        for note in all_notes:
+            note = nn.functional.one_hot(torch.tensor([[note]]), num_classes=129).float()
+            preds, h, c = self._decode(note, h, c)
+
+            probs = nn.functional.softmax(beta * preds, dim=-1).cpu().numpy()
+            probs = probs / np.sum(probs)
+            curr_note = np.random.choice(129, p=probs.flatten())
+
+        curr_note = torch.tensor([[curr_note]])
+        gen_out = [curr_note]
+        for _ in range(max_length -1):
+            note = nn.functional.one_hot(curr_note, num_classes=129).float()
+            preds, h, c = self._decode(note, h, c)
+
+            probs = nn.functional.softmax(beta * preds, dim=-1).cpu().numpy()
+            probs = probs / np.sum(probs)
+            curr_note = np.random.choice(129, p=probs.flatten())
+
+            curr_note = torch.tensor([[curr_note]])
+            gen_out.append(curr_note)
+        
+        gen_out = torch.cat(gen_out, dim=-1).squeeze(0)
+        return all_notes + gen_out.tolist()
+            
+    # TODO: fix loss
+    def loss(self, x, x_reco, kl_weight=0.5):
+        targets = torch.argmax(x, dim=-1)
+        targets = targets.flatten()
+        logits = x_reco.flatten(end_dim=-2)
+        base_loss = nn.functional.cross_entropy(logits, targets, reduction='mean')
+
+        return {
+            'ce': base_loss,
+            'kl': torch.tensor(-1),
             'mu': torch.tensor(0),
             'sig': torch.tensor(0),
             'total': base_loss
