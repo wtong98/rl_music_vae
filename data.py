@@ -42,7 +42,8 @@ def load_composer(data_dir='data/music21', name='bach'):
 
 
 def scores_to_dataset(scores, sampling_rate=0.25):
-    examples = [_batch(part, sampling_rate=sampling_rate) for score in scores for part in score.parts]
+    # examples = [_batch(part, sampling_rate=sampling_rate) for score in scores for part in score.parts]
+    examples = [_batch(score, sampling_rate=sampling_rate) for score in scores]
     examples = np.concatenate(examples, axis=0)
     dataset = TensorDataset(torch.tensor(examples))
     return dataset
