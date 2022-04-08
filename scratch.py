@@ -9,6 +9,8 @@ from collections import deque, namedtuple
 import gym
 import numpy as np
 
+from music21 import stream, note as nt
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -185,7 +187,7 @@ class ReplayMemory:
 
 
 # <codecell>
-state_dict = torch.load('save/model_rnn_ae.pt')
+state_dict = torch.load('save/model_rnn_vae.pt')
 dqn_dict = {k:v.cpu() for k, v in state_dict.items() if not k.startswith('enc')}
 
 policy_net = MusicDQN()
@@ -202,7 +204,7 @@ batch_size = 128
 gamma = 0.999
 beta_start = 0
 beta_end = 1
-note_weight = 0
+note_weight = 0.5
 beta_decay = 200
 target_update = 10
 grad_clip_range = (-1, 1)
@@ -287,7 +289,21 @@ for e in tqdm(range(n_episodes)):
 # %%
 policy_net.cpu()
 z = torch.randn((1,128))
-seq = policy_net.sample(z, beta=1)
-seq
 
+# <codecell>
+N = 5
+all_scores = []
+
+for _ in range(N):
+    samp = policy_net.sample(z[:1, :], start_seq=[60], beta=0.5)
+    print('samp', samp)
+    score = stream.Stream()
+    for note in samp:
+        elem = nt.Note(note)
+        score.append(elem)
+    all_scores.append(score)
+
+# %%
+for i, score in enumerate(all_scores):
+    score.write('midi', fp=f'save/sample/{i}.mid')
 # %%
