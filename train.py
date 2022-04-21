@@ -227,7 +227,7 @@ def evaluate_model(model, test_dl):
     print('Mu:', np.mean(means))
     print('Sig:', np.mean(sigs))
     print('Acc:', total_acc / num_iters)
-    return total_loss / num_iters
+    return total_loss / num_iters, (total_acc / num_iters).item()
 
 model = RnnVAE()
 opt = Adam(model.parameters())
@@ -236,6 +236,7 @@ model.cuda()
 
 train_losses = []
 test_losses = []
+test_accs = []
 num_epochs = 15
 
 for epoch in range(num_epochs):
@@ -243,7 +244,7 @@ for epoch in range(num_epochs):
     num_iters = 0
 
     model.eval()
-    test_loss = evaluate_model(model, test_loader)
+    test_loss, test_acc = evaluate_model(model, test_loader)
     model.train()
 
     for x in tqdm(train_loader):
@@ -262,27 +263,33 @@ for epoch in range(num_epochs):
     train_losses.append(total_loss / num_iters)
 
     model.eval()
-    test_loss = evaluate_model(model, test_loader)
+    test_loss, test_acc = evaluate_model(model, test_loader)
     model.train()
     test_losses.append(test_loss)
+    test_accs.append(test_acc)
 
 # <codecell>
 plt.plot(np.arange(num_epochs), train_losses, '--o', label='Train loss')
 plt.plot(np.arange(num_epochs), test_losses, '--o', label='Test loss')
 plt.xticks(np.arange(num_epochs)[::2])
-plt.legend()
-
-plt.title('RNN VAE Loss')
+plt.legend(loc='center right')
+plt.title('RNN VAE Training Performance')
 plt.xlabel('Epoch')
 plt.ylabel('ELBO Loss')
-plt.savefig('save/fig/loss.png')
 
-# TODO: plot accuracy
+ax = plt.gca().twinx()
+ax.plot(np.arange(num_epochs), test_accs, '--o', label='Test accuracy', color='tab:orange')
+ax.set_ylabel('Test accuracy', color='tab:orange')
+ax.tick_params(axis='y', labelcolor='tab:orange')
+
+
+plt.savefig('save/fig/loss.png')
 
 # <codecell>
 torch.save(model.state_dict(), 'save/model_rnn_vae.pt')
 
 # <codecell>
+model = RnnVAE()
 state_dict = torch.load('save/model_rnn_vae.pt')
 model.load_state_dict(state_dict)
 model.eval()
@@ -301,11 +308,14 @@ N = 5
 all_scores = []
 
 for _ in range(N):
-    samp = model.sample(z[:1, :], start_seq=[60], beta=0.5)
+    samp = model.sample(z[:1, :], start_seq=[60], beta=0.7)
     print('samp', samp)
     score = stream.Stream()
     for note in samp:
-        elem = nt.Note(note)
+        if note == 128:
+            elem = nt.Rest()
+        else:
+            elem = nt.Note(note)
         score.append(elem)
     all_scores.append(score)
 
