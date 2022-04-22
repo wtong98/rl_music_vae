@@ -466,9 +466,22 @@ class RnnVAE(nn.Module):
 
     def _decode(self, x, h, c):
         input_emb = self.embedding(x)
-        dec_out, (h, c) = self.dec(input_emb, (h, c))
-        logits = self.dec_to_logit(dec_out)
-        return logits, h, c
+        all_logits = []
+
+        for i in range(x.shape[1]):
+            if np.random.random() > 0.5 or len(all_logits) == 0:
+                input_tok = input_emb[:,i,:].unsqueeze(1)
+            else:
+                input_tok = torch.argmax(all_logits[-1], dim=-1)
+                input_tok = torch.nn.functional.one_hot(input_tok, num_classes=self.num_pitches).float()
+                input_tok = self.embedding(input_tok)
+
+            dec_out, (h, c) = self.dec(input_tok, (h, c))
+            logits = self.dec_to_logit(dec_out)
+            all_logits.append(logits)
+
+        out = torch.cat(all_logits, dim=1)
+        return out, h, c
 
     def forward(self, x):
         mu, sig = self._encode(x)

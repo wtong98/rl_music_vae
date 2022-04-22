@@ -14,17 +14,19 @@ from music21 import stream
 import torch
 from torch import nn
 from torch.optim import Adam
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, random_split, ConcatDataset
 from torch.distributions import Normal, kl_divergence
 
 from tqdm import tqdm
 
-from data import load_composer, scores_to_dataset
+from data import load_all, load_composer, scores_to_dataset
 from model import MusicVAE, MusicAE, RnnAE
 
 # <codecell>
-scores = load_composer(name='bach')
-dataset = scores_to_dataset(scores, sampling_rate=0.5)
+# scores = load_composer(name='bach')
+# dataset = scores_to_dataset(scores, sampling_rate=0.5)
+all_ds = load_all()
+dataset = ConcatDataset(all_ds.values())
 
 test_len = int(len(dataset) * 0.1)
 train_len = len(dataset) - test_len
@@ -237,14 +239,17 @@ model.cuda()
 train_losses = []
 test_losses = []
 test_accs = []
-num_epochs = 15
+num_epochs = 10
 
 for epoch in range(num_epochs):
+    print('EPOCH:', epoch+1)
     total_loss = 0
     num_iters = 0
 
     model.eval()
     test_loss, test_acc = evaluate_model(model, test_loader)
+    test_losses.append(test_loss)
+    test_accs.append(test_acc)
     model.train()
 
     for x in tqdm(train_loader):
@@ -262,15 +267,15 @@ for epoch in range(num_epochs):
     
     train_losses.append(total_loss / num_iters)
 
-    model.eval()
-    test_loss, test_acc = evaluate_model(model, test_loader)
-    model.train()
-    test_losses.append(test_loss)
-    test_accs.append(test_acc)
+model.eval()
+test_loss, test_acc = evaluate_model(model, test_loader)
+model.train()
+test_losses.append(test_loss)
+test_accs.append(test_acc)
 
 # <codecell>
 plt.plot(np.arange(num_epochs), train_losses, '--o', label='Train loss')
-plt.plot(np.arange(num_epochs), test_losses, '--o', label='Test loss')
+plt.plot(np.arange(num_epochs), test_losses[:-1], '--o', label='Test loss')
 plt.xticks(np.arange(num_epochs)[::2])
 plt.legend(loc='center right')
 plt.title('RNN VAE Training Performance')
@@ -278,7 +283,7 @@ plt.xlabel('Epoch')
 plt.ylabel('ELBO Loss')
 
 ax = plt.gca().twinx()
-ax.plot(np.arange(num_epochs), test_accs, '--o', label='Test accuracy', color='tab:orange')
+ax.plot(np.arange(num_epochs), test_accs[:-1], '--o', label='Test accuracy', color='tab:orange')
 ax.set_ylabel('Test accuracy', color='tab:orange')
 ax.tick_params(axis='y', labelcolor='tab:orange')
 
@@ -286,11 +291,11 @@ ax.tick_params(axis='y', labelcolor='tab:orange')
 plt.savefig('save/fig/loss.png')
 
 # <codecell>
-torch.save(model.state_dict(), 'save/model_rnn_vae.pt')
+torch.save(model.state_dict(), 'save/model_rnn_vae_all.pt')
 
 # <codecell>
 model = RnnVAE()
-state_dict = torch.load('save/model_rnn_vae.pt')
+state_dict = torch.load('save/model_rnn_vae_all.pt')
 model.load_state_dict(state_dict)
 model.eval()
 
@@ -305,23 +310,81 @@ z = torch.randn((1, 128))
 
 # <codecell>
 N = 5
-all_scores = []
 
-for _ in range(N):
-    samp = model.sample(z[:1, :], start_seq=[60], beta=0.7)
+for i in range(N):
+    samp = model.sample(z[:1, :], start_seq=[60], beta=0.8)
     print('samp', samp)
+    note_dur = 0.5
+    last_note = None
+    all_notes = []
     score = stream.Stream()
     for note in samp:
         if note == 128:
             elem = nt.Rest()
         else:
-            elem = nt.Note(note)
-        score.append(elem)
-    all_scores.append(score)
+            if note == last_note:
+                all_notes[-1].quarterLength += note_dur
+            else:
+                elem = nt.Note(note)
+                elem.quarterLength = 0.5
+                last_note = note
+                all_notes.append(elem)
 
+    for n in all_notes:
+        score.append(n)
+
+    score.write('midi', f'save/sample/{i}.mid')
         
+
 # %%
-for i, score in enumerate(all_scores):
-    score.write('midi', fp=f'save/sample/{i}.mid')
+### PRODUCE SAMPLES OF EACH 'STYLE'
+model.cuda()
+
+n_examples = 128
+all_vecs = {}
+
+for name, ds in all_ds.items():
+    print('processing', name)
+    spare = len(ds) - n_examples
+    sample, _ = random_split(ds, [n_examples, spare])
+    all_examples = next(iter(DataLoader(ds, batch_size=n_examples)))[0]
+    all_examples = all_examples.cuda()
+
+    all_out, sig = model._encode(all_examples)
+    platonic_rep = torch.mean(all_out, axis=0)
+    all_vecs[name] = platonic_rep
+
+# %%
+model.cpu()
+
+for name, z in all_vecs.items():
+    z = z.cpu()
+    z = z.unsqueeze(0)
+    note_dur = 0.5
+    last_note = None
+
+    samp = model.sample(z, start_seq=[60], beta=1)
+    print('samp', samp)
+    all_notes = []
+    score = stream.Stream()
+    for note in samp:
+        if note == 128:
+            elem = nt.Rest()
+        else:
+            if note == last_note:
+                all_notes[-1].quarterLength += note_dur
+            else:
+                elem = nt.Note(note)
+                elem.quarterLength = 0.5
+                last_note = note
+                all_notes.append(elem)
+
+    for n in all_notes:
+        score.append(n)
+    
+    score.write('midi', f'save/sample/{name}.mid')
+    
+
+
 
 # %%

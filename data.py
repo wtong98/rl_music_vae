@@ -19,7 +19,25 @@ from torch.utils.data import TensorDataset
 
 REST_IDX = 128
 
-def load_composer(data_dir='data/music21', name='bach'):
+def load_all():
+    composers = [
+        ('bach', 0.5), 
+        ('beethoven', 0.5), 
+        ('mozart', 0.5), 
+        ('ryansMammoth', 0.25)
+    ]
+
+    all_ds = {}
+    for name, quant in composers:
+        print('processing', name)
+        scores = load_composer(name)
+        ds = scores_to_dataset(scores, sampling_rate=quant)
+        all_ds[name] = ds
+    
+    return all_ds
+
+
+def load_composer(name='bach', data_dir='data/music21'):
     if type(data_dir) == str:
         data_dir = Path(data_dir)
     
@@ -30,8 +48,14 @@ def load_composer(data_dir='data/music21', name='bach'):
         data_dir.mkdir()
 
     if not pkl_path.exists():
-        bundle = corpus.search(name, 'composer')
-        scores = [metadata.parse() for metadata in tqdm(bundle)]
+        bundle = corpus.search(name)
+        scores = []
+        for metadata in tqdm(bundle):
+            try:
+                scores.append(metadata.parse())
+            except:
+                print('Whoopsie daisies!')
+
         with pkl_path.open('wb') as fp:
             pickle.dump(scores, fp)
     else:
@@ -42,8 +66,8 @@ def load_composer(data_dir='data/music21', name='bach'):
 
 
 def scores_to_dataset(scores, sampling_rate=0.25):
-    # examples = [_batch(part, sampling_rate=sampling_rate) for score in scores for part in score.parts]
-    examples = [_batch(score, sampling_rate=sampling_rate) for score in scores]
+    examples = [_batch(part, sampling_rate=sampling_rate) for score in scores for part in score.parts]
+    # examples = [_batch(score, sampling_rate=sampling_rate) for score in scores]
     examples = np.concatenate(examples, axis=0)
     dataset = TensorDataset(torch.tensor(examples))
     return dataset
