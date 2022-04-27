@@ -5,6 +5,7 @@ author: William Tong (wtong@g.harvard.edu)
 """
 
 # <codecell>
+import pickle
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -239,7 +240,7 @@ model.cuda()
 train_losses = []
 test_losses = []
 test_accs = []
-num_epochs = 10
+num_epochs = 15
 
 for epoch in range(num_epochs):
     print('EPOCH:', epoch+1)
@@ -291,16 +292,17 @@ ax.tick_params(axis='y', labelcolor='tab:orange')
 plt.savefig('save/fig/loss.png')
 
 # <codecell>
-torch.save(model.state_dict(), 'save/model_rnn_vae_all.pt')
+torch.save(model.state_dict(), 'save/model_rnn_vae_final.pt')
 
 # <codecell>
 model = RnnVAE()
-state_dict = torch.load('save/model_rnn_vae_all.pt')
+state_dict = torch.load('save/model_rnn_vae_final.pt')
 model.load_state_dict(state_dict)
 model.eval()
 
 # <codecell>
 model.cpu()
+model.eval()
 # <codecell>
 # ex = next(iter(test_loader))[0]
 # print(torch.argmax(ex[0], dim=-1))
@@ -333,7 +335,7 @@ for i in range(N):
     for n in all_notes:
         score.append(n)
 
-    score.write('midi', f'save/sample/{i}.mid')
+    score.write('midi', f'save/sample/vanilla/{i}.mid')
         
 
 # %%
@@ -356,35 +358,42 @@ for name, ds in all_ds.items():
 
 # %%
 model.cpu()
+n_rep = 3
 
 for name, z in all_vecs.items():
     z = z.cpu()
     z = z.unsqueeze(0)
     note_dur = 0.5
-    last_note = None
 
-    samp = model.sample(z, start_seq=[60], beta=1)
-    print('samp', samp)
-    all_notes = []
-    score = stream.Stream()
-    for note in samp:
-        if note == 128:
-            elem = nt.Rest()
-        else:
-            if note == last_note:
-                all_notes[-1].quarterLength += note_dur
-            else:
-                elem = nt.Note(note)
-                elem.quarterLength = 0.5
-                last_note = note
+    for i in range(n_rep):
+        last_note = None
+
+        samp = model.sample(z, start_seq=[60], beta=0.8)
+        print('samp', samp)
+        all_notes = []
+        score = stream.Stream()
+        for note in samp:
+            if note == 128:
+                elem = nt.Rest()
                 all_notes.append(elem)
+                last_note = None
+            else:
+                if note == last_note:
+                    all_notes[-1].quarterLength += note_dur
+                else:
+                    elem = nt.Note(note)
+                    elem.quarterLength = 0.5
+                    last_note = note
+                    all_notes.append(elem)
 
-    for n in all_notes:
-        score.append(n)
+        for n in all_notes:
+            score.append(n)
+        
+        score.write('midi', f'save/sample/vanilla/{name}_{i}.mid')
     
-    score.write('midi', f'save/sample/{name}.mid')
-    
 
-
+# %%
+with open('save/all_vecs.pkl', 'wb') as fp:
+    pickle.dump(all_vecs, fp)
 
 # %%

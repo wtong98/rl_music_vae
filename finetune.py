@@ -9,7 +9,7 @@ import gym
 import numpy as np
 import matplotlib.pyplot as plt
 
-from music21 import stream, note as nt
+from music21 import stream, interval, note as nt
 
 import torch
 import torch.nn as nn
@@ -18,12 +18,71 @@ from torch.distributions.multinomial import Multinomial
 
 from tqdm import tqdm
 
-# TODO: implement RNN reward
-def inc_reward(history):
+# composite reward
+def composite_reward(history):
+    total = inc_reward(history) + cons_maj_reward(history)
+    return total / 2
+
+# reward increasing notes
+def inc_reward(history, weight=5):
     if len(history) >=2:
         if history[-1] > history[-2]:
-            return 5
+            return weight
     return 0
+
+# reward notes in the same key
+def key_reward(history, weight=10):
+    score = stream.Stream([nt.Note(n) for n in history])
+    cert = score.analyze('key').tonalCertainty()
+    return cert ** weight
+
+
+# reward major consonant intervals
+def cons_maj_reward(history, weight=5):
+    all_cons_intvs = ['M3', 'P4', 'P5', 'M6', 'P8']
+    if len(history) >= 2:
+        intv = interval.Interval(nt.Note(history[-2]), nt.Note(history[-1]))
+        if intv.name in all_cons_intvs:
+            return weight
+    return 0
+
+# reward minor consonant intervals
+def cons_min_reward(history, weight=5):
+    all_cons_intvs = ['m3', 'P4', 'P5', 'm6', 'P8']
+    if len(history) >= 2:
+        intv = interval.Interval(nt.Note(history[-2]), nt.Note(history[-1]))
+        if intv.name in all_cons_intvs:
+            return weight
+    return 0
+
+# reward dash dot rhythm
+# TODO dash_dot, combined reward <-- STOPPED HERE
+def dash_dot_reward(history, weight=5):
+    # history = np.array(history)
+    # diffs = history[1:] - history[:-1]
+    # diffs_mask = diffs == 0
+    
+    # total = 0
+    # for i, d in enumerate(diffs_mask):
+    #     if i % 2 == 0 and d == True:
+    #         total += 1
+    #     elif i % 2 != 0 and d == False:
+    #         total += 1
+    
+    # success_rate = total / len(diffs_mask)
+    # return success_rate * weight
+
+    rhythm_idx = len(history[:-1]) % 3
+    if rhythm_idx == 1:
+        if history[-1] == history[-2]:
+            return weight
+    else:
+        if len(history) >= 2:
+            if history[-1] != history[-2]:
+                return weight
+
+    return 0
+
 
 @torch.no_grad()
 def note_reward(model, history, device='cpu'):
@@ -62,13 +121,13 @@ class MusicEnv(gym.Env):
 
         obs = self.last_obs[1:] + [action]
         is_done = self.note_counter == self.max_notes
-        inc_rew = inc_reward(self.note_hist)
+        theor_rew = composite_reward(self.note_hist)
         note_rew = note_reward(self.model, self.note_hist, device=self.device)
-        reward = inc_rew + self.note_weight * note_rew
+        reward = theor_rew + self.note_weight * note_rew
 
         self.last_obs = obs
         return obs, reward, is_done, {
-            'inc_reward': inc_rew,
+            'theor_reward': theor_rew,
             'note_reward': note_rew
         }
     
@@ -187,7 +246,7 @@ class ReplayMemory:
 
 
 # <codecell>
-state_dict = torch.load('save/model_rnn_vae.pt')
+state_dict = torch.load('save/model_rnn_vae_final.pt')
 dqn_dict = {k:v.cpu() for k, v in state_dict.items() if not k.startswith('enc')}
 
 policy_net = MusicDQN()
@@ -204,7 +263,7 @@ batch_size = 128
 gamma = 0.999
 beta_start = 0
 beta_end = 1
-note_weight = 0.5
+note_weight = 0.3
 beta_decay = 200
 target_update = 10
 grad_clip_range = (-1, 1)
@@ -251,7 +310,7 @@ def optimize_step():
 
 # TODO: gather reward statistics, try arp strat
 total_reward = 0
-inc_rew = 0
+theor_rew = 0
 note_rew = 0
 steps = 0
 
@@ -275,17 +334,17 @@ for e in tqdm(range(n_episodes)):
         optimize_step()
 
         total_reward += reward
-        inc_rew += info['inc_reward']
+        theor_rew += info['theor_reward']
         note_rew += info['note_reward']
         steps += 1
     
     if e % target_update == 0 and e > 0:
         avg_reward = total_reward / target_update
         all_rewards.append(avg_reward)
-        print(f'Episode {e}:  reward={avg_reward:.2f}   inc={inc_rew / target_update:.2f}  note={note_rew / target_update:.2f}')
+        print(f'Episode {e}:  reward={avg_reward:.2f}   theor={theor_rew / target_update:.2f}  note={note_rew / target_update:.2f}')
         target_net.load_state_dict(policy_net.state_dict())
         total_reward = 0
-        inc_rew = 0
+        theor_rew = 0
         note_rew = 0
 
 # <codecell>
@@ -293,10 +352,10 @@ for e in tqdm(range(n_episodes)):
 ticks = (np.arange(len(all_rewards)) + 1) * target_update
 plt.plot(all_rewards, '--o')
 plt.xticks(ticks=np.arange(len(all_rewards))[::3], labels=ticks[::3])
-plt.title('Fine-tuning agent reward across episodes of training')
+plt.title('Composite reward')
 plt.xlabel('Episode')
 plt.ylabel('Average reward per episode')
-plt.savefig('save/fig/reward.png')
+plt.savefig('save/fig/tune/composite_reward.png')
 
 
 # %%
@@ -304,22 +363,38 @@ policy_net.cpu()
 z = torch.randn((1,128))
 
 # <codecell>
-N = 5
-all_scores = []
+N = 3
 
-for _ in range(N):
-    samp = policy_net.sample(z[:1, :], start_seq=[60], beta=0.5)
-    print('samp', samp)
-    score = stream.Stream()
-    for note in samp:
-        if note == 128:
-            elem = nt.Rest()
-        else:
-            elem = nt.Note(note)
-        score.append(elem)
-    all_scores.append(score)
+for name, z in all_vecs.items():
+    z = z.cpu()
+    for i in range(N):
+        samp = policy_net.sample(z, start_seq=[60], beta=1)
+        print('samp', samp)
+        note_dur = 0.5
+        last_note = None
+        all_notes = []
+        score = stream.Stream()
+        for note in samp:
+            if note == 128:
+                elem = nt.Rest()
+            else:
+                if note == last_note:
+                    all_notes[-1].quarterLength += note_dur
+                else:
+                    elem = nt.Note(note)
+                    elem.quarterLength = 0.5
+                    last_note = note
+                    all_notes.append(elem)
+
+        for n in all_notes:
+            score.append(n)
+
+        score.write('midi', f'save/sample/finetune/composite_{name}_{i}.mid')
 
 # %%
-for i, score in enumerate(all_scores):
-    score.write('midi', fp=f'save/sample/{i}.mid')
+import pickle
+
+with open('save/all_vecs.pkl', 'rb') as fp:
+    all_vecs = pickle.load(fp)
+
 # %%
